@@ -1,20 +1,35 @@
 """
-Tines API Client
+Tines API Client - Enterprise Edition
 Handles all HTTP communication with the Tines API.
 
 Security Features:
-- Token sanitization in error messages
+- Token sanitization in error messages (20+ patterns)
 - Enforced HTTPS with certificate verification
-- Configurable timeout
+- Configurable timeout with bounds checking
 - Path traversal prevention
 - Input validation
+- Rate limiting integration
+- Circuit breaker pattern
+- Retry with exponential backoff
+- Audit logging
 """
 
 import os
 import re
+import time
+import random
 from typing import Any, Optional
 import httpx
 from dotenv import load_dotenv
+
+from security import (
+    TinesErrorCode,
+    CorrelationContext,
+    Outcome,
+    audit_logger,
+    rate_limiter,
+    circuit_breaker,
+)
 
 load_dotenv()
 
@@ -63,21 +78,48 @@ class TinesAPIError(Exception):
         (r'private_key["\s:=]+[^"}\s,]+', 'private_key: [REDACTED]'),
         # URLs with embedded credentials
         (r'://[^:]+:[^@]+@', '://[REDACTED]:[REDACTED]@'),
+        # Crypto-specific
+        (r'mnemonic["\s:=]+[^"}\s,]+', 'mnemonic: [REDACTED]'),
+        (r'seed["\s:=]+[^"}\s,]+', 'seed: [REDACTED]'),
+        (r'wallet[_-]?key["\s:=]+[^"}\s,]+', 'wallet_key: [REDACTED]'),
+        # Webhook secrets
+        (r'webhook[_-]?secret["\s:=]+[^"}\s,]+', 'webhook_secret: [REDACTED]'),
     ]
 
-    def __init__(self, message: str, status_code: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        error_code: Optional[TinesErrorCode] = None,
+    ):
         sanitized = message
         for pattern, replacement in self.SENSITIVE_PATTERNS:
             sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
         self.status_code = status_code
+        self.error_code = error_code or TinesErrorCode.API_ERROR
         super().__init__(sanitized)
 
 
 class TinesClient:
-    """Client for interacting with the Tines API."""
+    """
+    Enterprise-grade client for interacting with the Tines API.
+
+    Features:
+    - Rate limiting
+    - Circuit breaker
+    - Retry with exponential backoff
+    - Audit logging
+    - Connection pooling
+    """
 
     # Valid tenant domain pattern
     TENANT_PATTERN = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9\-\.]*\.(tines\.com|tines\.io)$')
+
+    # Retry configuration
+    MAX_RETRIES = 3
+    BASE_DELAY = 1.0
+    MAX_DELAY = 30.0
+    RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
     def __init__(
         self,
@@ -114,12 +156,19 @@ class TinesClient:
         """Get or create HTTP client with connection pooling."""
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.Client(
-                timeout=self._timeout,
+                timeout=httpx.Timeout(
+                    connect=5.0,
+                    read=self._timeout,
+                    write=10.0,
+                    pool=5.0,
+                ),
                 verify=True,  # Explicit SSL certificate verification
+                http2=True,   # Enable HTTP/2 for performance
                 follow_redirects=False,  # Security: Don't auto-follow redirects
                 limits=httpx.Limits(
-                    max_connections=10,
-                    max_keepalive_connections=5,
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30.0,
                 ),
             )
         return self._http_client
@@ -134,12 +183,21 @@ class TinesClient:
         """Cleanup on garbage collection."""
         self.close()
 
+    def __enter__(self):
+        """Context manager support."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager cleanup."""
+        self.close()
+
     def _get_headers(self) -> dict[str, str]:
         """Get headers for API requests."""
         return {
             "x-user-token": self._api_token,
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "X-Correlation-ID": CorrelationContext.get_id(),
         }
 
     def _validate_endpoint(self, endpoint: str) -> str:
@@ -157,6 +215,20 @@ class TinesClient:
 
         return endpoint
 
+    def _should_retry(self, status_code: int, attempt: int) -> bool:
+        """Check if request should be retried."""
+        return (
+            attempt < self.MAX_RETRIES and
+            status_code in self.RETRYABLE_STATUS_CODES
+        )
+
+    def _calculate_delay(self, attempt: int) -> float:
+        """Calculate delay with exponential backoff and jitter."""
+        delay = min(self.BASE_DELAY * (2 ** attempt), self.MAX_DELAY)
+        # Add jitter (0.5 to 1.5 multiplier)
+        delay *= (0.5 + random.random())
+        return delay
+
     def _request(
         self,
         method: str,
@@ -164,36 +236,155 @@ class TinesClient:
         params: Optional[dict] = None,
         json_data: Optional[dict] = None,
     ) -> dict[str, Any]:
-        """Make an HTTP request to the Tines API."""
+        """
+        Make an HTTP request to the Tines API with enterprise features.
+
+        Features:
+        - Rate limiting check
+        - Circuit breaker check
+        - Retry with exponential backoff
+        - Audit logging
+        """
         endpoint = self._validate_endpoint(endpoint)
         url = f"{self._api_url}/{endpoint}"
 
-        try:
-            response = self._get_client().request(
-                method=method,
-                url=url,
-                headers=self._get_headers(),
-                params=params,
-                json=json_data,
+        # Generate new correlation ID for this request
+        CorrelationContext.set_id(None)  # Reset to generate new ID
+        correlation_id = CorrelationContext.get_id()
+
+        start_time = time.monotonic()
+
+        # Check rate limiter
+        if not rate_limiter.acquire():
+            audit_logger.log_rate_limit(
+                action=f"{method} {endpoint}",
+                metadata={"limit": 60, "window": 60},
             )
-            response.raise_for_status()
-
-            if response.status_code == 204:
-                return {"success": True}
-
-            return response.json()
-
-        except httpx.HTTPStatusError as e:
-            # Security: Don't expose response body which might contain tokens
             raise TinesAPIError(
-                f"API request failed: {e.response.status_code}",
-                status_code=e.response.status_code
-            ) from None
-        except httpx.TimeoutException:
-            raise TinesAPIError("Request timed out") from None
-        except httpx.RequestError as e:
-            # Security: Only expose error type, not full details
-            raise TinesAPIError(f"Request failed: {type(e).__name__}") from None
+                "Rate limit exceeded. Please wait before retrying.",
+                status_code=429,
+                error_code=TinesErrorCode.RATE_LIMITED,
+            )
+
+        # Check circuit breaker
+        if not circuit_breaker.can_execute():
+            audit_logger.log_api_call(
+                action=f"{method} {endpoint}",
+                outcome=Outcome.BLOCKED,
+                error_code=TinesErrorCode.CIRCUIT_OPEN.code,
+            )
+            raise TinesAPIError(
+                "Service temporarily unavailable. Please try again later.",
+                status_code=503,
+                error_code=TinesErrorCode.CIRCUIT_OPEN,
+            )
+
+        last_exception: Optional[Exception] = None
+
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                response = self._get_client().request(
+                    method=method,
+                    url=url,
+                    headers=self._get_headers(),
+                    params=params,
+                    json=json_data,
+                )
+
+                duration_ms = (time.monotonic() - start_time) * 1000
+
+                # Check if should retry
+                if self._should_retry(response.status_code, attempt):
+                    delay = self._calculate_delay(attempt)
+                    time.sleep(delay)
+                    continue
+
+                response.raise_for_status()
+
+                # Success - record with circuit breaker
+                circuit_breaker.record_success()
+
+                # Audit log success
+                audit_logger.log_api_call(
+                    action=f"{method} {endpoint}",
+                    outcome=Outcome.SUCCESS,
+                    duration_ms=int(duration_ms),
+                )
+
+                if response.status_code == 204:
+                    return {"success": True}
+
+                return response.json()
+
+            except httpx.HTTPStatusError as e:
+                duration_ms = (time.monotonic() - start_time) * 1000
+                status_code = e.response.status_code
+
+                # Record failure with circuit breaker
+                circuit_breaker.record_failure()
+
+                # Map status code to error code
+                if status_code == 401:
+                    error_code = TinesErrorCode.AUTH_FAILED
+                elif status_code == 403:
+                    error_code = TinesErrorCode.AUTH_DENIED
+                elif status_code == 404:
+                    error_code = TinesErrorCode.NOT_FOUND
+                elif status_code == 429:
+                    error_code = TinesErrorCode.RATE_LIMITED
+                else:
+                    error_code = TinesErrorCode.API_ERROR
+
+                # Audit log failure
+                audit_logger.log_api_call(
+                    action=f"{method} {endpoint}",
+                    outcome="FAILURE",
+                    duration_ms=duration_ms,
+                    error_code=error_code.code,
+                )
+
+                # Security: Don't expose response body which might contain tokens
+                raise TinesAPIError(
+                    f"API request failed: {status_code}",
+                    status_code=status_code,
+                    error_code=error_code,
+                ) from None
+
+            except httpx.TimeoutException:
+                circuit_breaker.record_failure()
+                last_exception = TinesAPIError(
+                    "Request timed out",
+                    error_code=TinesErrorCode.SERVICE_UNAVAILABLE,
+                )
+                if attempt < self.MAX_RETRIES:
+                    delay = self._calculate_delay(attempt)
+                    time.sleep(delay)
+                    continue
+
+            except httpx.RequestError as e:
+                circuit_breaker.record_failure()
+                # Security: Only expose error type, not full details
+                last_exception = TinesAPIError(
+                    f"Request failed: {type(e).__name__}",
+                    error_code=TinesErrorCode.SERVICE_UNAVAILABLE,
+                )
+                if attempt < self.MAX_RETRIES:
+                    delay = self._calculate_delay(attempt)
+                    time.sleep(delay)
+                    continue
+
+        # All retries exhausted
+        duration_ms = (time.monotonic() - start_time) * 1000
+        audit_logger.log_api_call(
+            action=f"{method} {endpoint}",
+            outcome="FAILURE",
+            duration_ms=duration_ms,
+            error_code=TinesErrorCode.SERVICE_UNAVAILABLE.code,
+        )
+
+        if last_exception:
+            raise last_exception
+        raise TinesAPIError("Request failed after retries")
 
     # ==================== Stories ====================
 

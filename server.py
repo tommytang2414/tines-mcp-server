@@ -1,12 +1,15 @@
 """
-Tines MCP Server
+Tines MCP Server - Enterprise Edition
 Provides MCP tools for interacting with the Tines security automation platform.
 
 Security Features:
 - All API calls wrapped with error handling to prevent info leakage
 - Input validation on all parameters
 - Logging set to WARNING to prevent token exposure
-- Consistent error responses
+- Consistent error responses with correlation IDs
+- Rate limiting and circuit breaker protection
+- Structured audit logging
+- Health check endpoint
 """
 
 import json
@@ -16,6 +19,13 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from tines_client import TinesClient, TinesAPIError
+from security import (
+    TinesErrorCode,
+    CorrelationContext,
+    get_health_status,
+    create_error_response,
+    InputValidator,
+)
 
 # Security: Configure logging to WARNING level to avoid logging sensitive data
 logging.basicConfig(level=logging.WARNING)
@@ -50,16 +60,17 @@ def safe_json_loads(json_str: str | None, field_name: str = "data") -> Any:
     if not json_str:
         return None
     try:
-        return json.loads(json_str)
+        parsed = json.loads(json_str)
+        # Validate JSON depth
+        InputValidator.validate_json_depth(parsed)
+        return parsed
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in {field_name}: {e.msg}") from None
 
 
 def validate_positive_int(value: int, field_name: str = "id") -> int:
     """Validate that an integer is positive."""
-    if value <= 0:
-        raise ValueError(f"{field_name} must be a positive integer")
-    return value
+    return InputValidator.validate_positive_int(value, field_name)
 
 
 def validate_pagination(page: int, per_page: int) -> tuple[int, int]:
@@ -75,16 +86,7 @@ def validate_pagination(page: int, per_page: int) -> tuple[int, int]:
 
 def validate_string(value: str | None, field_name: str, required: bool = False) -> str | None:
     """Validate string input."""
-    if value is None:
-        if required:
-            raise ValueError(f"{field_name} is required")
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string")
-    value = value.strip()
-    if required and not value:
-        raise ValueError(f"{field_name} cannot be empty")
-    return value if value else None
+    return InputValidator.validate_string(value, field_name, required)
 
 
 def handle_api_call(func):
@@ -94,13 +96,40 @@ def handle_api_call(func):
         try:
             return func(*args, **kwargs)
         except TinesAPIError as e:
-            return json.dumps({"error": str(e), "status_code": e.status_code})
+            response = create_error_response(
+                e.error_code,
+                str(e),
+                {"status_code": e.status_code} if e.status_code else None,
+            )
+            return json.dumps(response)
         except ValueError as e:
-            return json.dumps({"error": f"Validation error: {e}"})
+            response = create_error_response(
+                TinesErrorCode.VALIDATION_ERROR,
+                str(e),
+            )
+            return json.dumps(response)
         except Exception:
             # Security: Never expose internal error details
-            return json.dumps({"error": "An unexpected error occurred"})
+            response = create_error_response(
+                TinesErrorCode.API_ERROR,
+                "An unexpected error occurred",
+            )
+            return json.dumps(response)
     return wrapper
+
+
+# ==================== Health Check ====================
+
+
+@mcp.tool()
+def health_check() -> str:
+    """
+    Check the health status of the Tines MCP server.
+
+    Returns:
+        JSON object with server health status including version and uptime
+    """
+    return format_response(get_health_status())
 
 
 # ==================== Stories ====================
