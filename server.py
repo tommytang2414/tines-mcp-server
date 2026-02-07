@@ -730,6 +730,273 @@ def list_action_types() -> str:
     return format_response(result)
 
 
+# ==================== Drafts (Change Control) ====================
+
+
+@mcp.tool()
+@handle_api_call
+def list_drafts(story_id: int) -> str:
+    """
+    List all drafts for a story with change control enabled.
+
+    Args:
+        story_id: The ID of the story
+
+    Returns:
+        JSON list of drafts
+    """
+    validate_positive_int(story_id, "story_id")
+    result = get_client().list_drafts(story_id)
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def get_draft(story_id: int, draft_id: int) -> str:
+    """
+    Get detailed information about a specific draft.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft
+
+    Returns:
+        JSON object with draft details
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    result = get_client().get_draft(story_id, draft_id)
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def create_draft(
+    story_id: int,
+    name: str,
+    description: str = "",
+) -> str:
+    """
+    Create a new draft from a live story for testing changes.
+
+    Use this when making changes to stories with Change Control enabled.
+    The draft is a copy of the live story that you can modify and test.
+
+    Args:
+        story_id: The ID of the story to create a draft from
+        name: Name for the draft (e.g., "Add new webhook action")
+        description: Optional description of the changes
+
+    Returns:
+        JSON object with the created draft details including draft_id
+    """
+    validate_positive_int(story_id, "story_id")
+    if not name or not name.strip():
+        raise ValueError("name is required")
+    result = get_client().create_draft(story_id, name.strip(), description or None)
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def delete_draft(story_id: int, draft_id: int) -> str:
+    """
+    Delete/discard a draft without publishing it.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft to delete
+
+    Returns:
+        Success confirmation
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    result = get_client().delete_draft(story_id, draft_id)
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def publish_draft(story_id: int, draft_id: int) -> str:
+    """
+    Publish a draft to make it the live version of the story.
+
+    This replaces the current live story with the draft's content.
+    Use this after testing your changes in the draft.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft to publish
+
+    Returns:
+        JSON object with the published story details
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    result = get_client().publish_draft(story_id, draft_id)
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def list_draft_actions(story_id: int, draft_id: int) -> str:
+    """
+    List all actions in a draft.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft
+
+    Returns:
+        JSON list of actions in the draft
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    result = get_client().get_draft_agents(story_id, draft_id)
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def create_draft_action(
+    story_id: int,
+    draft_id: int,
+    action_type: str,
+    name: str,
+    options: str | None = None,
+    position_x: int = 0,
+    position_y: int = 0,
+    source_ids: str | None = None,
+    receiver_ids: str | None = None,
+) -> str:
+    """
+    Create a new action in a draft.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft
+        action_type: Type of action (e.g., "Agents::HTTPRequestAgent")
+        name: Name for the action
+        options: JSON string of action-specific options
+        position_x: X position on canvas (default: 0)
+        position_y: Y position on canvas (default: 0)
+        source_ids: JSON array of action IDs that feed into this action
+        receiver_ids: JSON array of action IDs this action feeds into
+
+    Returns:
+        JSON object with the created action details
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    options_dict = safe_json_loads(options, "options")
+    position = {"x": position_x, "y": position_y}
+    sources = safe_json_loads(source_ids, "source_ids")
+    receivers = safe_json_loads(receiver_ids, "receiver_ids")
+
+    result = get_client().create_draft_agent(
+        story_id, draft_id, action_type, name, options_dict, position, sources, receivers
+    )
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def update_draft_action(
+    story_id: int,
+    draft_id: int,
+    action_id: int,
+    name: str | None = None,
+    options: str | None = None,
+    position_x: int | None = None,
+    position_y: int | None = None,
+    source_ids: str | None = None,
+    receiver_ids: str | None = None,
+) -> str:
+    """
+    Update an action in a draft.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft
+        action_id: The ID of the action to update
+        name: New name for the action
+        options: JSON string of new options
+        position_x: New X position on canvas
+        position_y: New Y position on canvas
+        source_ids: JSON array of new source action IDs
+        receiver_ids: JSON array of new receiver action IDs
+
+    Returns:
+        JSON object with the updated action details
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    validate_positive_int(action_id, "action_id")
+    options_dict = safe_json_loads(options, "options")
+    position = None
+    if position_x is not None or position_y is not None:
+        position = {"x": position_x or 0, "y": position_y or 0}
+    sources = safe_json_loads(source_ids, "source_ids")
+    receivers = safe_json_loads(receiver_ids, "receiver_ids")
+
+    result = get_client().update_draft_agent(
+        story_id, draft_id, action_id, name, options_dict, position, sources, receivers
+    )
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def delete_draft_action(story_id: int, draft_id: int, action_id: int) -> str:
+    """
+    Delete an action from a draft.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft
+        action_id: The ID of the action to delete
+
+    Returns:
+        Success confirmation
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    validate_positive_int(action_id, "action_id")
+    result = get_client().delete_draft_agent(story_id, draft_id, action_id)
+    return format_response(result)
+
+
+@mcp.tool()
+@handle_api_call
+def run_draft_action(
+    story_id: int,
+    draft_id: int,
+    action_id: int,
+    data: str | None = None,
+) -> str:
+    """
+    Run/test an action in a draft.
+
+    Use this to test actions before publishing the draft to live.
+
+    Args:
+        story_id: The ID of the story
+        draft_id: The ID of the draft
+        action_id: The ID of the action to run
+        data: Optional JSON string of input data
+
+    Returns:
+        JSON object with the run result
+    """
+    validate_positive_int(story_id, "story_id")
+    validate_positive_int(draft_id, "draft_id")
+    validate_positive_int(action_id, "action_id")
+    data_dict = safe_json_loads(data, "data")
+    result = get_client().run_draft_agent(story_id, draft_id, action_id, data_dict)
+    return format_response(result)
+
+
 # ==================== Entry Point ====================
 
 if __name__ == "__main__":

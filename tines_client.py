@@ -490,3 +490,134 @@ class TinesClient:
     def list_action_types(self) -> dict[str, Any]:
         """List all available action types."""
         return self._request("GET", "/agent_types")
+
+    # ==================== Drafts (Change Control) ====================
+
+    def list_drafts(self, story_id: int) -> dict[str, Any]:
+        """List all drafts for a story."""
+        return self._request("GET", f"/stories/{story_id}/drafts")
+
+    def get_draft(self, story_id: int, draft_id: int) -> dict[str, Any]:
+        """Get a specific draft."""
+        return self._request("GET", f"/stories/{story_id}/drafts/{draft_id}")
+
+    def create_draft(
+        self,
+        story_id: int,
+        name: str,
+        description: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Create a new draft from the live story.
+
+        Args:
+            story_id: The story to create a draft from
+            name: Name for the draft
+            description: Optional description
+        """
+        data = {"name": name}
+        if description:
+            data["description"] = description
+        return self._request("POST", f"/stories/{story_id}/drafts", json_data=data)
+
+    def update_draft(
+        self,
+        story_id: int,
+        draft_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Update draft metadata."""
+        data = {}
+        if name:
+            data["name"] = name
+        if description is not None:
+            data["description"] = description
+        return self._request("PUT", f"/stories/{story_id}/drafts/{draft_id}", json_data=data)
+
+    def delete_draft(self, story_id: int, draft_id: int) -> dict[str, Any]:
+        """Delete/discard a draft."""
+        return self._request("DELETE", f"/stories/{story_id}/drafts/{draft_id}")
+
+    def publish_draft(self, story_id: int, draft_id: int) -> dict[str, Any]:
+        """Publish a draft to make it the live version."""
+        return self._request("POST", f"/stories/{story_id}/drafts/{draft_id}/publish")
+
+    def get_draft_agents(self, story_id: int, draft_id: int) -> dict[str, Any]:
+        """List all agents/actions in a draft."""
+        return self._request("GET", f"/stories/{story_id}/drafts/{draft_id}/agents")
+
+    def create_draft_agent(
+        self,
+        story_id: int,
+        draft_id: int,
+        action_type: str,
+        name: str,
+        options: Optional[dict] = None,
+        position: Optional[dict] = None,
+        source_ids: Optional[list[int]] = None,
+        receiver_ids: Optional[list[int]] = None,
+    ) -> dict[str, Any]:
+        """Create a new action in a draft."""
+        data = {
+            "type": action_type,
+            "name": name,
+        }
+        if options:
+            data["options"] = options
+        if position:
+            data["position"] = position
+        if source_ids:
+            data["source_ids"] = source_ids
+        if receiver_ids:
+            data["receiver_ids"] = receiver_ids
+
+        return self._request(
+            "POST", f"/stories/{story_id}/drafts/{draft_id}/agents", json_data=data
+        )
+
+    def update_draft_agent(
+        self,
+        story_id: int,
+        draft_id: int,
+        agent_id: int,
+        name: Optional[str] = None,
+        options: Optional[dict] = None,
+        position: Optional[dict] = None,
+        source_ids: Optional[list[int]] = None,
+        receiver_ids: Optional[list[int]] = None,
+    ) -> dict[str, Any]:
+        """Update an action in a draft."""
+        data = {}
+        if name:
+            data["name"] = name
+        if options:
+            data["options"] = options
+        if position:
+            data["position"] = position
+        if source_ids is not None:
+            data["source_ids"] = source_ids
+        if receiver_ids is not None:
+            data["receiver_ids"] = receiver_ids
+
+        return self._request(
+            "PUT", f"/stories/{story_id}/drafts/{draft_id}/agents/{agent_id}", json_data=data
+        )
+
+    def delete_draft_agent(self, story_id: int, draft_id: int, agent_id: int) -> dict[str, Any]:
+        """Delete an action from a draft."""
+        return self._request("DELETE", f"/stories/{story_id}/drafts/{draft_id}/agents/{agent_id}")
+
+    def run_draft_agent(
+        self,
+        story_id: int,
+        draft_id: int,
+        agent_id: int,
+        data: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        """Run/test an action in a draft."""
+        return self._request(
+            "POST",
+            f"/stories/{story_id}/drafts/{draft_id}/agents/{agent_id}/run",
+            json_data=data or {},
+        )

@@ -140,6 +140,28 @@ After configuring, restart Claude Desktop to load the MCP server.
 |------|-------------|
 | `list_action_types` | List available action types |
 
+### Drafts (Change Control)
+For stories with Change Control enabled, use these tools to create, test, and publish changes safely:
+
+| Tool | Description |
+|------|-------------|
+| `list_drafts` | List all drafts for a story |
+| `get_draft` | Get draft details |
+| `create_draft` | Create a new draft from live story |
+| `delete_draft` | Discard a draft |
+| `publish_draft` | Publish draft to live |
+| `list_draft_actions` | List actions in a draft |
+| `create_draft_action` | Add action to draft |
+| `update_draft_action` | Update action in draft |
+| `delete_draft_action` | Remove action from draft |
+| `run_draft_action` | Test an action in draft |
+
+**Workflow for Change Control:**
+1. `create_draft` - Create a draft from the live story
+2. `create_draft_action` / `update_draft_action` - Make your changes
+3. `run_draft_action` - Test your changes
+4. `publish_draft` - Push changes to live (or `delete_draft` to discard)
+
 ## Common Action Types
 
 When creating actions, use these type strings:
