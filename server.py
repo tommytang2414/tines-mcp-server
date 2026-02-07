@@ -1,20 +1,27 @@
 """
 Tines MCP Server
 Provides MCP tools for interacting with the Tines security automation platform.
+
+Security Features:
+- All API calls wrapped with error handling to prevent info leakage
+- Input validation on all parameters
+- Logging set to WARNING to prevent token exposure
+- Consistent error responses
 """
 
 import json
 import logging
+from functools import wraps
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from tines_client import TinesClient, TinesAPIError
 
-# Configure logging - WARNING level to avoid logging sensitive data
+# Security: Configure logging to WARNING level to avoid logging sensitive data
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger("tines-mcp")
 
-# Disable httpx debug logging to prevent token leakage
+# Security: Disable httpx debug logging to prevent token leakage
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -55,8 +62,34 @@ def validate_positive_int(value: int, field_name: str = "id") -> int:
     return value
 
 
+def validate_pagination(page: int, per_page: int) -> tuple[int, int]:
+    """Validate pagination parameters."""
+    if page < 1:
+        page = 1
+    if per_page < 1:
+        per_page = 1
+    if per_page > 100:
+        per_page = 100  # Security: Limit max page size
+    return page, per_page
+
+
+def validate_string(value: str | None, field_name: str, required: bool = False) -> str | None:
+    """Validate string input."""
+    if value is None:
+        if required:
+            raise ValueError(f"{field_name} is required")
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    value = value.strip()
+    if required and not value:
+        raise ValueError(f"{field_name} cannot be empty")
+    return value if value else None
+
+
 def handle_api_call(func):
-    """Decorator to handle API errors consistently."""
+    """Decorator to handle API errors consistently and prevent info leakage."""
+    @wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -65,6 +98,7 @@ def handle_api_call(func):
         except ValueError as e:
             return json.dumps({"error": f"Validation error: {e}"})
         except Exception:
+            # Security: Never expose internal error details
             return json.dumps({"error": "An unexpected error occurred"})
     return wrapper
 
@@ -73,6 +107,7 @@ def handle_api_call(func):
 
 
 @mcp.tool()
+@handle_api_call
 def list_stories(
     page: int = 1,
     per_page: int = 20,
@@ -84,13 +119,18 @@ def list_stories(
 
     Args:
         page: Page number for pagination (default: 1)
-        per_page: Number of stories per page (default: 20)
+        per_page: Number of stories per page (default: 20, max: 100)
         folder_id: Optional folder ID to filter by
         team_id: Optional team ID to filter by
 
     Returns:
         JSON list of stories with their IDs, names, and metadata
     """
+    page, per_page = validate_pagination(page, per_page)
+    if folder_id is not None:
+        validate_positive_int(folder_id, "folder_id")
+    if team_id is not None:
+        validate_positive_int(team_id, "team_id")
     result = get_client().list_stories(page, per_page, folder_id, team_id)
     return format_response(result)
 
@@ -113,6 +153,7 @@ def get_story(story_id: int) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def create_story(
     name: str,
     description: str = "",
@@ -133,6 +174,13 @@ def create_story(
     Returns:
         JSON object with the created story details
     """
+    name = validate_string(name, "name", required=True)
+    if folder_id is not None:
+        validate_positive_int(folder_id, "folder_id")
+    if team_id is not None:
+        validate_positive_int(team_id, "team_id")
+    if keep_events_for < 0:
+        raise ValueError("keep_events_for must be non-negative")
     result = get_client().create_story(
         name, description or None, folder_id, team_id, keep_events_for
     )
@@ -140,6 +188,7 @@ def create_story(
 
 
 @mcp.tool()
+@handle_api_call
 def update_story(
     story_id: int,
     name: str | None = None,
@@ -160,6 +209,13 @@ def update_story(
     Returns:
         JSON object with the updated story details
     """
+    validate_positive_int(story_id, "story_id")
+    if name is not None:
+        name = validate_string(name, "name")
+    if folder_id is not None:
+        validate_positive_int(folder_id, "folder_id")
+    if keep_events_for is not None and keep_events_for < 0:
+        raise ValueError("keep_events_for must be non-negative")
     result = get_client().update_story(
         story_id, name, description, folder_id, keep_events_for
     )
@@ -184,6 +240,7 @@ def delete_story(story_id: int) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def export_story(story_id: int) -> str:
     """
     Export a story as JSON for backup or sharing.
@@ -194,6 +251,7 @@ def export_story(story_id: int) -> str:
     Returns:
         JSON export of the story including all actions
     """
+    validate_positive_int(story_id, "story_id")
     result = get_client().export_story(story_id)
     return format_response(result)
 
@@ -219,6 +277,10 @@ def import_story(
     story_data = safe_json_loads(story_json, "story_json")
     if not story_data:
         raise ValueError("story_json is required")
+    if folder_id is not None:
+        validate_positive_int(folder_id, "folder_id")
+    if team_id is not None:
+        validate_positive_int(team_id, "team_id")
     result = get_client().import_story(story_data, folder_id, team_id)
     return format_response(result)
 
@@ -227,6 +289,7 @@ def import_story(
 
 
 @mcp.tool()
+@handle_api_call
 def list_actions(story_id: int) -> str:
     """
     List all actions in a story.
@@ -237,11 +300,13 @@ def list_actions(story_id: int) -> str:
     Returns:
         JSON list of actions with their IDs, names, and types
     """
+    validate_positive_int(story_id, "story_id")
     result = get_client().list_actions(story_id)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def get_action(action_id: int) -> str:
     """
     Get detailed information about a specific action.
@@ -252,6 +317,7 @@ def get_action(action_id: int) -> str:
     Returns:
         JSON object with action details including options
     """
+    validate_positive_int(action_id, "action_id")
     result = get_client().get_action(action_id)
     return format_response(result)
 
@@ -292,6 +358,8 @@ def create_action(
         JSON object with the created action details
     """
     validate_positive_int(story_id, "story_id")
+    name = validate_string(name, "name", required=True)
+    action_type = validate_string(action_type, "action_type", required=True)
     options_dict = safe_json_loads(options, "options")
     position = {"x": position_x, "y": position_y}
     sources = safe_json_loads(source_ids, "source_ids")
@@ -330,6 +398,8 @@ def update_action(
         JSON object with the updated action details
     """
     validate_positive_int(action_id, "action_id")
+    if name is not None:
+        name = validate_string(name, "name")
     options_dict = safe_json_loads(options, "options")
     position = None
     if position_x is not None or position_y is not None:
@@ -383,6 +453,7 @@ def run_action(action_id: int, data: str | None = None) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def list_credentials(
     page: int = 1,
     per_page: int = 20,
@@ -393,17 +464,21 @@ def list_credentials(
 
     Args:
         page: Page number for pagination (default: 1)
-        per_page: Number of credentials per page (default: 20)
+        per_page: Number of credentials per page (default: 20, max: 100)
         team_id: Optional team ID to filter by
 
     Returns:
         JSON list of credentials (values are masked)
     """
+    page, per_page = validate_pagination(page, per_page)
+    if team_id is not None:
+        validate_positive_int(team_id, "team_id")
     result = get_client().list_credentials(page, per_page, team_id)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def get_credential(credential_id: int) -> str:
     """
     Get information about a specific credential.
@@ -414,6 +489,7 @@ def get_credential(credential_id: int) -> str:
     Returns:
         JSON object with credential details (value is masked)
     """
+    validate_positive_int(credential_id, "credential_id")
     result = get_client().get_credential(credential_id)
     return format_response(result)
 
@@ -433,12 +509,11 @@ def create_text_credential(name: str, value: str, team_id: int) -> str:
         JSON object with the created credential details
     """
     validate_positive_int(team_id, "team_id")
-    if not name or not name.strip():
-        raise ValueError("name is required")
+    name = validate_string(name, "name", required=True)
     if not value:
         raise ValueError("value is required")
     result = get_client().create_credential(
-        name=name.strip(),
+        name=name,
         mode="TEXT",
         team_id=team_id,
         value=value,
@@ -447,6 +522,7 @@ def create_text_credential(name: str, value: str, team_id: int) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def create_oauth_credential(
     name: str,
     team_id: int,
@@ -469,6 +545,12 @@ def create_oauth_credential(
     Returns:
         JSON object with the created credential details
     """
+    validate_positive_int(team_id, "team_id")
+    name = validate_string(name, "name", required=True)
+    token_url = validate_string(token_url, "token_url", required=True)
+    client_id = validate_string(client_id, "client_id", required=True)
+    if not client_secret:
+        raise ValueError("client_secret is required")
     result = get_client().create_credential(
         name=name,
         mode="OAUTH",
@@ -502,22 +584,25 @@ def delete_credential(credential_id: int) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def list_teams(page: int = 1, per_page: int = 20) -> str:
     """
     List all teams in your Tines tenant.
 
     Args:
         page: Page number for pagination (default: 1)
-        per_page: Number of teams per page (default: 20)
+        per_page: Number of teams per page (default: 20, max: 100)
 
     Returns:
         JSON list of teams
     """
+    page, per_page = validate_pagination(page, per_page)
     result = get_client().list_teams(page, per_page)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def get_team(team_id: int) -> str:
     """
     Get information about a specific team.
@@ -528,6 +613,7 @@ def get_team(team_id: int) -> str:
     Returns:
         JSON object with team details
     """
+    validate_positive_int(team_id, "team_id")
     result = get_client().get_team(team_id)
     return format_response(result)
 
@@ -536,6 +622,7 @@ def get_team(team_id: int) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def list_folders(
     page: int = 1,
     per_page: int = 20,
@@ -546,17 +633,21 @@ def list_folders(
 
     Args:
         page: Page number for pagination (default: 1)
-        per_page: Number of folders per page (default: 20)
+        per_page: Number of folders per page (default: 20, max: 100)
         team_id: Optional team ID to filter by
 
     Returns:
         JSON list of folders
     """
+    page, per_page = validate_pagination(page, per_page)
+    if team_id is not None:
+        validate_positive_int(team_id, "team_id")
     result = get_client().list_folders(page, per_page, team_id)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def get_folder(folder_id: int) -> str:
     """
     Get information about a specific folder.
@@ -567,11 +658,13 @@ def get_folder(folder_id: int) -> str:
     Returns:
         JSON object with folder details
     """
+    validate_positive_int(folder_id, "folder_id")
     result = get_client().get_folder(folder_id)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def create_folder(name: str, team_id: int, parent_id: int | None = None) -> str:
     """
     Create a new folder.
@@ -584,6 +677,10 @@ def create_folder(name: str, team_id: int, parent_id: int | None = None) -> str:
     Returns:
         JSON object with the created folder details
     """
+    name = validate_string(name, "name", required=True)
+    validate_positive_int(team_id, "team_id")
+    if parent_id is not None:
+        validate_positive_int(parent_id, "parent_id")
     result = get_client().create_folder(name, team_id, parent_id)
     return format_response(result)
 
@@ -592,6 +689,7 @@ def create_folder(name: str, team_id: int, parent_id: int | None = None) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def list_events(story_id: int, page: int = 1, per_page: int = 20) -> str:
     """
     List events (executions) for a story.
@@ -599,16 +697,19 @@ def list_events(story_id: int, page: int = 1, per_page: int = 20) -> str:
     Args:
         story_id: The ID of the story
         page: Page number for pagination (default: 1)
-        per_page: Number of events per page (default: 20)
+        per_page: Number of events per page (default: 20, max: 100)
 
     Returns:
         JSON list of events with their data and status
     """
+    validate_positive_int(story_id, "story_id")
+    page, per_page = validate_pagination(page, per_page)
     result = get_client().list_events(story_id, page, per_page)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def get_event(event_id: int) -> str:
     """
     Get detailed information about a specific event.
@@ -619,6 +720,7 @@ def get_event(event_id: int) -> str:
     Returns:
         JSON object with event details
     """
+    validate_positive_int(event_id, "event_id")
     result = get_client().get_event(event_id)
     return format_response(result)
 
@@ -627,6 +729,7 @@ def get_event(event_id: int) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def list_global_resources(
     page: int = 1,
     per_page: int = 20,
@@ -637,17 +740,21 @@ def list_global_resources(
 
     Args:
         page: Page number for pagination (default: 1)
-        per_page: Number of resources per page (default: 20)
+        per_page: Number of resources per page (default: 20, max: 100)
         team_id: Optional team ID to filter by
 
     Returns:
         JSON list of global resources
     """
+    page, per_page = validate_pagination(page, per_page)
+    if team_id is not None:
+        validate_positive_int(team_id, "team_id")
     result = get_client().list_global_resources(page, per_page, team_id)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def get_global_resource(resource_id: int) -> str:
     """
     Get a specific global resource.
@@ -658,11 +765,13 @@ def get_global_resource(resource_id: int) -> str:
     Returns:
         JSON object with resource details
     """
+    validate_positive_int(resource_id, "resource_id")
     result = get_client().get_global_resource(resource_id)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def create_global_resource(name: str, value: str, team_id: int) -> str:
     """
     Create a new global resource.
@@ -675,11 +784,16 @@ def create_global_resource(name: str, value: str, team_id: int) -> str:
     Returns:
         JSON object with the created resource details
     """
+    name = validate_string(name, "name", required=True)
+    validate_positive_int(team_id, "team_id")
+    if not value:
+        raise ValueError("value is required")
     result = get_client().create_global_resource(name, value, team_id)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def update_global_resource(
     resource_id: int,
     name: str | None = None,
@@ -696,11 +810,15 @@ def update_global_resource(
     Returns:
         JSON object with the updated resource details
     """
+    validate_positive_int(resource_id, "resource_id")
+    if name is not None:
+        name = validate_string(name, "name")
     result = get_client().update_global_resource(resource_id, name, value)
     return format_response(result)
 
 
 @mcp.tool()
+@handle_api_call
 def delete_global_resource(resource_id: int) -> str:
     """
     Delete a global resource.
@@ -711,6 +829,7 @@ def delete_global_resource(resource_id: int) -> str:
     Returns:
         Success confirmation
     """
+    validate_positive_int(resource_id, "resource_id")
     result = get_client().delete_global_resource(resource_id)
     return format_response(result)
 
@@ -719,6 +838,7 @@ def delete_global_resource(resource_id: int) -> str:
 
 
 @mcp.tool()
+@handle_api_call
 def list_action_types() -> str:
     """
     List all available action types in Tines.
@@ -791,9 +911,8 @@ def create_draft(
         JSON object with the created draft details including draft_id
     """
     validate_positive_int(story_id, "story_id")
-    if not name or not name.strip():
-        raise ValueError("name is required")
-    result = get_client().create_draft(story_id, name.strip(), description or None)
+    name = validate_string(name, "name", required=True)
+    result = get_client().create_draft(story_id, name, description or None)
     return format_response(result)
 
 
@@ -889,6 +1008,8 @@ def create_draft_action(
     """
     validate_positive_int(story_id, "story_id")
     validate_positive_int(draft_id, "draft_id")
+    name = validate_string(name, "name", required=True)
+    action_type = validate_string(action_type, "action_type", required=True)
     options_dict = safe_json_loads(options, "options")
     position = {"x": position_x, "y": position_y}
     sources = safe_json_loads(source_ids, "source_ids")
@@ -933,6 +1054,8 @@ def update_draft_action(
     validate_positive_int(story_id, "story_id")
     validate_positive_int(draft_id, "draft_id")
     validate_positive_int(action_id, "action_id")
+    if name is not None:
+        name = validate_string(name, "name")
     options_dict = safe_json_loads(options, "options")
     position = None
     if position_x is not None or position_y is not None:

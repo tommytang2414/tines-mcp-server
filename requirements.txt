@@ -1,4 +1,22 @@
-mcp>=1.0.0
-httpx>=0.25.0
-pydantic>=2.0.0
-python-dotenv>=1.0.0
+# Tines MCP Server Dependencies
+# Pinned versions for supply chain security - do not use >= in production
+# Last security audit: 2024-01
+
+# Core MCP framework
+mcp==1.26.0
+
+# HTTP client with async support
+httpx==0.28.1
+
+# Data validation
+pydantic==2.12.5
+
+# Environment variable management
+python-dotenv==1.2.1
+
+# Required transitive dependencies (pinned for security)
+anyio==4.12.1
+certifi==2026.1.4
+httpcore==1.0.9
+idna==3.11
+sniffio==1.3.1
