@@ -338,8 +338,8 @@ class TinesClient:
                 # Audit log failure
                 audit_logger.log_api_call(
                     action=f"{method} {endpoint}",
-                    outcome="FAILURE",
-                    duration_ms=duration_ms,
+                    outcome=Outcome.FAILURE,
+                    duration_ms=int(duration_ms),
                     error_code=error_code.code,
                 )
 
@@ -377,8 +377,8 @@ class TinesClient:
         duration_ms = (time.monotonic() - start_time) * 1000
         audit_logger.log_api_call(
             action=f"{method} {endpoint}",
-            outcome="FAILURE",
-            duration_ms=duration_ms,
+            outcome=Outcome.FAILURE,
+            duration_ms=int(duration_ms),
             error_code=TinesErrorCode.SERVICE_UNAVAILABLE.code,
         )
 
